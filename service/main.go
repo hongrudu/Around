@@ -1,21 +1,31 @@
 package main
 
 import (
-	elastic "gopkg.in/olivere/elastic.v3"
-	"fmt"
-	"net/http"
-	"encoding/json"
-	"log"
-	"strconv"
-	"reflect"
-	"github.com/pborman/uuid"
-	"strings"
-
-	// GCS libs
 	"context"
-	"cloud.google.com/go/storage"
+	"encoding/json"
+	"fmt"
 	"io"
+	"log"
+	"net/http"
+	//"os"
+	"reflect"
+	"strconv"
+
+	elastic "gopkg.in/olivere/elastic.v3"
+
 	"cloud.google.com/go/bigtable"
+	"cloud.google.com/go/storage"
+
+	//"github.com/auth0/go-jwt-middleware"
+	"github.com/dgrijalva/jwt-go"
+	//"github.com/go-redis/redis"
+	//"github.com/gorilla/mux"
+	"github.com/pborman/uuid"
+
+	"strings"
+	"github.com/gorilla/mux"
+	"github.com/auth0/go-jwt-middleware"
+	//"os"
 )
 
 
@@ -30,6 +40,13 @@ const(
 	ES_URL = "http://35.196.224.188:9200"
 	BUCKET_NAME = "post-image-195202"
 )
+
+var (
+	//mySigningKey        = []byte("secret")
+	//BIGTABLE_PROJECT_ID = os.Getenv("BIG_TABLE_PROJECT_ID")
+	//GCS_BUCKET          = os.Getenv("GCS_BUCKET")
+)
+
 
 type Location struct {
 	Lat float64 `json:"lat"`
@@ -100,8 +117,22 @@ func main() {
 
 
 	fmt.Println("started-service")
-	http.HandleFunc("/post", handlerPost)
-	http.HandleFunc("/search", handlerSearch)
+	// Here we are instantiating the gorilla/mux router
+	r := mux.NewRouter()
+
+	var jwtMiddleware = jwtmiddleware.New(jwtmiddleware.Options{
+		ValidationKeyGetter: func(token *jwt.Token) (interface{}, error) {
+			return mySigningKey, nil
+		},
+		SigningMethod: jwt.SigningMethodHS256,
+	})
+
+	r.Handle("/post", jwtMiddleware.Handler(http.HandlerFunc(handlerPost)))
+	r.Handle("/search", jwtMiddleware.Handler(http.HandlerFunc(handlerSearch)))
+	r.Handle("/login", http.HandlerFunc(loginHandler))
+	r.Handle("/signup", http.HandlerFunc(signupHandler))
+
+	http.Handle("/", r)
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
 
@@ -109,6 +140,25 @@ func handlerPost(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type,Authorization")
+
+	if r.Method != "POST" {
+		return
+	}
+
+
+	user := r.Context().Value("user")
+
+	if user == nil {
+		m := fmt.Sprintf("Unable to find user in context")
+		fmt.Println(m)
+		http.Error(w, m, http.StatusBadRequest)
+		return
+	}
+
+
+	claims := user.(*jwt.Token).Claims
+	username := claims.(jwt.MapClaims)["username"]
+
 
 	// 32 << 20 is the maxMemory param for ParseMultipartForm, equals to 32MB (1MB = 1024 * 1024 bytes = 2^20 bytes)
 	// After you call ParseMultipartForm, the file will be saved in the server memory with maxMemory size.
@@ -121,7 +171,7 @@ func handlerPost(w http.ResponseWriter, r *http.Request) {
 	lat, _ := strconv.ParseFloat(r.FormValue("lat"), 64)
 	lon, _ := strconv.ParseFloat(r.FormValue("lon"), 64)
 	p := &Post{
-		User: "1111",
+		User: username.(string),
 		Message: r.FormValue("message"),
 		Location: Location{
 			Lat: lat,
